@@ -5,7 +5,7 @@ from typing import List
 from app.database import get_db
 from app import models
 from app import schemas
-from app.worker import create_task
+from app.worker import create_task, super_delete
 
 router = APIRouter(
     prefix="/todos",
@@ -56,7 +56,13 @@ def update_todo(id: int, todo_update: schemas.TodoUpdate, db: Session = Depends(
     db.refresh(todo)
     return todo
 
-# 5. DELETE (DELETE)
+# 5. SUPER DELETE (DELETE)
+@router.delete("/super_delete", status_code=status.HTTP_202_ACCEPTED)
+def delete_all_todos():
+    super_delete.delay()   # send task to celery
+    return {"message": "Task received, will be completed shortly"}
+
+# 6. DELETE (DELETE)
 @router.delete("/{id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_todo(id: int, db: Session = Depends(get_db)):
     todo_query = db.query(models.Todo).filter(models.Todo.id == id)
@@ -70,12 +76,10 @@ def delete_todo(id: int, db: Session = Depends(get_db)):
     return
 
 @router.post("/background-task")
-def run_background_task(task_type: str):
-    # .delay() is the magic method that sends the task to Celery
-    # instead of running it immediately.
-    task = create_task.delay(task_type)
-    
+def run_background_task(val1: int, val2: int):
+
+    create_task.delay(val1,val2)
     return {
-        "message": "Task received! It will be processed in the background.",
-        "task_id": task.id
+        "message": "Task received, It will be processed in the background.",
     }
+
