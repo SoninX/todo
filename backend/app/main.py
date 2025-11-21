@@ -1,7 +1,7 @@
 from fastapi import FastAPI
-import models
-from database import engine
-import routers as todo_router
+from app import models
+from app.database import engine
+from app import routers as todo_router
 
 models.Base.metadata.create_all(bind=engine)
 
