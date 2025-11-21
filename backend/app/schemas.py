@@ -19,3 +19,11 @@ class TodoResponse(TodoBase):
 
     class Config:
         from_attributes = True
+
+class TaskDetailResponse(BaseModel):
+    task_id: str
+    task_name: str
+    status: str
+
+    class Config:
+        from_attributes = True

@@ -75,11 +75,25 @@ def delete_todo(id: int, db: Session = Depends(get_db)):
     db.commit()
     return
 
-@router.post("/background-task")
-def run_background_task(val1: int, val2: int):
+@router.post("/background-task", response_model=schemas.TaskDetailResponse)
+def run_background_task(val1: int, val2: int, db: Session = Depends(get_db)):
+    #create celery task
+    task = create_task.apply_async(val1,val2)
+    
+    new_task = models.TaskDetail(
+        task_id = task.id,
+        task_name = "create_task",
+        status = "PENDING"
+    )
+    # when task is created at the same time fill the TaskDetail table with task_id, task_name and put status as pending
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+    return new_task
 
-    create_task.delay(val1,val2)
-    return {
-        "message": "Task received, It will be processed in the background.",
-    }
-
+@router.get("/status/{task_id}", response_model=schemas.TaskDetailResponse)
+def get_status(task_id: str, db: Session = Depends(get_db)):
+    task = db.query(models.TaskDetail).filter(models.TaskDetail.task_id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"task with id {task_id} not found")
+    return task
