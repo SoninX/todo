@@ -8,6 +8,7 @@ class Todo(Base):
     title = Column(String, index=True)
     description = Column(String, nullable=True)
     completed = Column(Boolean, default=False)
+    priority = Column(String, default="LOW")
 
 class TaskDetail(Base):
     __tablename__ = "task_detail"
