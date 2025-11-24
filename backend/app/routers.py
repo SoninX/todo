@@ -7,6 +7,13 @@ from app import models
 from app import schemas
 from app.worker import create_task, super_delete
 
+import os
+from fastapi import UploadFile, File
+from fastapi.responses import StreamingResponse
+import mimetypes
+
+from app.azure_client import get_blob_service_client, CONTAINER_NAME
+
 router = APIRouter(
     prefix="/todos",
     tags=["Todos"]
@@ -97,3 +104,42 @@ def get_status(task_id: str, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"task with id {task_id} not found")
     return task
+
+# --- AZURE UPLOAD / DOWNLOAD ---
+
+@router.post("/Azure_upload")
+async def upload_file(file: UploadFile = File(...)):
+
+    try:
+        blob_service_client = get_blob_service_client()
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=file.filename)
+
+        # Upload the file data
+        blob_client.upload_blob(file.file.read(), overwrite=True)
+
+        return {"filename": file.filename, "message": "File uploaded successfully to Azure"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/Azure_download/{filename}")
+async def download_file(filename: str):
+
+    try:
+        blob_service_client = get_blob_service_client()
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=filename)
+
+        # Check if file exists
+        if not blob_client.exists():
+            raise HTTPException(status_code=404, detail="File not found in Azure")
+
+        download_stream = blob_client.download_blob()
+        
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        return StreamingResponse(download_stream.chunks(), media_type=mime_type, headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+    except Exception as e:
+        print(f"Azure Error: {e}") 
+        raise HTTPException(status_code=500, detail=str(e))

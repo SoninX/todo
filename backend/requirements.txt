@@ -6,3 +6,6 @@ python-dotenv
 pydantic
 celery
 redis
+azure-storage-blob
+python-multipart
+alembic

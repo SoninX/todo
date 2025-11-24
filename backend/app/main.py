@@ -3,7 +3,7 @@ from app import models
 from app.database import engine
 from app import routers as todo_router
 
-models.Base.metadata.create_all(bind=engine)
+#models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
