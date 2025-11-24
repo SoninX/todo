@@ -78,7 +78,7 @@ def delete_todo(id: int, db: Session = Depends(get_db)):
 @router.post("/background-task", response_model=schemas.TaskDetailResponse)
 def run_background_task(val1: int, val2: int, db: Session = Depends(get_db)):
     #create celery task
-    task = create_task.apply_async(val1,val2)
+    task = create_task.apply_async(args = [val1,val2], countdown = 2)
     
     new_task = models.TaskDetail(
         task_id = task.id,
