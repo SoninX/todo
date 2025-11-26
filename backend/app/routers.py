@@ -5,7 +5,7 @@ from typing import List
 from app.database import get_db
 from app import models
 from app import schemas
-from app.worker import create_task, super_delete
+from app.worker import create_task, super_delete, process_ocr
 
 import os
 from fastapi import UploadFile, File
@@ -143,3 +143,47 @@ async def download_file(filename: str):
     except Exception as e:
         print(f"Azure Error: {e}") 
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/ocr/analyze")
+async def analyze_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    # 1. Upload to Azure Blob (Reuse your logic)
+    try:
+        blob_service_client = get_blob_service_client()
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=file.filename)
+        blob_client.upload_blob(file.file.read(), overwrite=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload Failed: {str(e)}")
+
+    # 2. Create DB Entry (Status: PENDING)
+    new_doc = models.OCRDocument(
+        filename=file.filename,
+        status="PENDING"
+    )
+    db.add(new_doc)
+    db.commit()
+    db.refresh(new_doc)
+
+    # 3. Trigger Celery Task
+    # We pass the filename and the DB ID so the worker knows what to update
+    task = process_ocr.apply_async(args=[file.filename, new_doc.id], countdown=2)
+
+    new_task = models.TaskDetail(
+        task_id = task.id,
+        task_name = "process_ocr",
+        status = "PENDING"
+    )
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+    return {
+    "task": new_task,
+    "doc_id": new_doc.id
+}
+
+
+@router.get("/ocr/status/{id}")
+def get_ocr_status(id: int, db: Session = Depends(get_db)):
+    doc = db.query(models.OCRDocument).filter(models.OCRDocument.id == id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc

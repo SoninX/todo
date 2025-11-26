@@ -5,6 +5,12 @@ from sqlalchemy import text # Import text for safe SQL execution
 from app.database import SessionLocal
 from app import models
 
+from app.azure_client import (
+    get_blob_service_client, 
+    get_document_analysis_client, 
+    CONTAINER_NAME
+)
+
 broker_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
 result_backend = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
 
@@ -48,3 +54,62 @@ def super_delete():
         return {"status": "Task Failed", "error": str(e)}
     finally:
         db.close()
+
+@celery_app.task(bind=True, name="process_ocr")
+def process_ocr(self, filename: str, doc_id: int):
+    db = SessionLocal()
+    try:
+        # 1. Download file
+        blob_service = get_blob_service_client()
+        blob_client = blob_service.get_blob_client(container=CONTAINER_NAME, blob=filename)
+        download_stream = blob_client.download_blob().readall()
+
+        # 2. OCR Analysis
+        document_analysis_client = get_document_analysis_client()
+        poller = document_analysis_client.begin_analyze_document(
+            "prebuilt-read", document=download_stream
+        )
+        result = poller.result()
+
+        # 3. Extract Text
+        full_text = ""
+        for page in result.pages:
+            for line in page.lines:
+                full_text += line.content + "\n"
+
+        # 4. Update OCRDocument (The Business Data)
+        ocr_record = db.query(models.OCRDocument).filter(models.OCRDocument.id == doc_id).first()
+        if ocr_record:
+            ocr_record.extracted_text = full_text
+            ocr_record.status = "COMPLETED"
+
+        # 5. Update TaskDetail (The Worker Status)
+        # We use self.request.id to find the specific task that is running
+        task_record = db.query(models.TaskDetail).filter(models.TaskDetail.task_id == self.request.id).first()
+        if task_record:
+            task_record.status = "COMPLETED"
+
+        # Commit everything at once
+        db.commit()
+            
+    except Exception as e:
+        db.rollback()
+        print(f"OCR Failed: {e}")
+        
+        # Update OCRDocument to FAILED
+        ocr_record = db.query(models.OCRDocument).filter(models.OCRDocument.id == doc_id).first()
+        if ocr_record:
+            ocr_record.status = "FAILED"
+            ocr_record.extracted_text = str(e)
+            
+        # Update TaskDetail to FAILED
+        task_record = db.query(models.TaskDetail).filter(models.TaskDetail.task_id == self.request.id).first()
+        if task_record:
+            task_record.status = "FAILED"
+            
+        db.commit()
+        
+    finally:
+        db.close()
+    
+    return "OCR Processing Finished" # add an id

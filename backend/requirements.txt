@@ -9,3 +9,4 @@ redis
 azure-storage-blob
 python-multipart
 alembic
+azure-ai-formrecognizer
