@@ -25,3 +25,4 @@ class OCRDocument(Base):
     filename = Column(String)
     status = Column(String, default="PENDING")
     extracted_text = Column(Text, nullable=True)
+    classification_result = Column(Text, nullable=True)

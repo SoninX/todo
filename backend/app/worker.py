@@ -1,5 +1,6 @@
 import os
 import time
+import json
 from celery import Celery
 from celery.schedules import crontab
 from sqlalchemy import text # Import text for safe SQL execution
@@ -10,7 +11,9 @@ import openpyxl
 from app.azure_client import (
     get_blob_service_client, 
     get_document_analysis_client, 
-    CONTAINER_NAME
+    get_doc_classified_client,
+    CONTAINER_NAME,
+    AZURE_OPENAI_DEPLOYMENT_NAME
 )
 
 broker_url = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
@@ -30,6 +33,36 @@ celery_app.conf.beat_schedule = {
     },
 }
 celery_app.conf.timezone = 'Asia/Kolkata'
+
+def generate_classification_prompt(text_content: str) -> str:
+    """Helper to generate the OpenAI prompt"""
+    return f"""Please classify the following document text into one of these document types and extract key information:
+
+DOCUMENT TYPES:
+- Booking Form - signed or not signed property booking forms
+- DEWA (Green Bill) - Dubai Electricity and Water Authority bill  
+- Emirates ID - UAE national identity card
+- Passport - passport document
+- QUOTATION (Quotation Unit) - property quotation document
+- SPA (Sales Purchase Agreement) - signed or not signed
+- TITLE_DEED - property ownership document
+- VISA - visa document
+
+DOCUMENT TEXT:
+{text_content}
+
+Respond in JSON format:
+{{
+    "document_type": "DOCUMENT_TYPE_NAME",
+    "confidence": a score for how much you are confident in this classification, ranges from 0-1 or null,
+    "reasoning": "Brief explanation",
+    "extracted_data": {{
+        "Name": "extracted name or null",
+        "expiration_date": "YYYY-MM-DD or null"
+    }}
+}}
+"""
+
 # make bind = True so that it can acess self which has task_id
 @celery_app.task(bind = True, name="create_task")
 def create_task(self, val1, val2):
@@ -183,3 +216,69 @@ def dispatch_scheduled_ocr():
 
     except Exception as e:
         return f"Failed to read Excel: {str(e)}"
+    
+@celery_app.task(bind=True, name="process_document_ai")
+def process_document_ai(self, filename: str, doc_id: int):
+    db = SessionLocal()
+    try:
+        print(f"Starting AI processing for {filename}...")
+
+        blob_service = get_blob_service_client()
+        blob_client = blob_service.get_blob_client(container=CONTAINER_NAME, blob=filename)
+        download_stream = blob_client.download_blob().readall()
+
+        document_analysis_client = get_document_analysis_client()
+        poller = document_analysis_client.begin_analyze_document(
+            "prebuilt-read", document=download_stream
+        )
+        ocr_result = poller.result()
+
+        full_text = ""
+        for page in ocr_result.pages:
+            for line in page.lines:
+                full_text += line.content + "\n"
+
+        formatted_prompt = generate_classification_prompt(full_text[:100000])
+        
+        openai_client = get_doc_classified_client()
+        response = openai_client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT_NAME,
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant that extracts data from documents."},
+                {"role": "user", "content": formatted_prompt}
+            ],
+            response_format={ "type": "json_object" },
+            temperature=0
+        )
+        
+        ai_result_json = response.choices[0].message.content
+
+        doc_record = db.query(models.OCRDocument).filter(models.OCRDocument.id == doc_id).first()
+        if doc_record:
+            doc_record.extracted_text = full_text
+            doc_record.classification_result = ai_result_json
+            doc_record.status = "COMPLETED"
+
+        task_record = db.query(models.TaskDetail).filter(models.TaskDetail.task_id == self.request.id).first()
+        if task_record:
+            task_record.status = "COMPLETED"
+
+        db.commit()
+        return "AI Processing Completed"
+
+    except Exception as e:
+        db.rollback()
+        print(f"AI Processing Failed: {e}")
+        
+        doc_record = db.query(models.OCRDocument).filter(models.OCRDocument.id == doc_id).first()
+        if doc_record:
+            doc_record.status = "FAILED"
+            doc_record.classification_result = str(e)
+            
+        task_record = db.query(models.TaskDetail).filter(models.TaskDetail.task_id == self.request.id).first()
+        if task_record:
+            task_record.status = "FAILED"
+            
+        db.commit()
+    finally:
+        db.close()

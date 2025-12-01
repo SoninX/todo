@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Json
+from typing import Optional, Any
 
 class TodoBase(BaseModel):
     title: str
@@ -29,3 +29,19 @@ class TaskDetailResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class OCRDocumentResponse(BaseModel):
+    id: int
+    filename: str
+    status: str
+    extracted_text: Optional[str] = None
+    classification_result: Optional[Json] = None 
+
+    class Config:
+        from_attributes = True
+
+# Schema for the Upload Response (so you get the IDs back)
+class ClassificationJobResponse(BaseModel):
+    message: str
+    doc_id: int
+    task_id: str

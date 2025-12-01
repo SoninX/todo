@@ -5,7 +5,7 @@ from typing import List
 from app.database import get_db
 from app import models
 from app import schemas
-from app.worker import create_task, super_delete, process_ocr
+from app.worker import create_task, super_delete, process_ocr, process_document_ai
 
 import os
 from fastapi import UploadFile, File
@@ -181,9 +181,43 @@ async def analyze_document(file: UploadFile = File(...), db: Session = Depends(g
 }
 
 
-@router.get("/ocr/status/{id}")
+@router.get("/ocr/status/{id}", response_model=schemas.OCRDocumentResponse)
 def get_ocr_status(id: int, db: Session = Depends(get_db)):
     doc = db.query(models.OCRDocument).filter(models.OCRDocument.id == id).first()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     return doc
+
+@router.post("/ocr/classify", response_model=schemas.ClassificationJobResponse)
+async def classify_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        blob_service_client = get_blob_service_client()
+        blob_client = blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=file.filename)
+        blob_client.upload_blob(file.file.read(), overwrite=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload Failed: {str(e)}")
+
+    new_doc = models.OCRDocument(
+        filename=file.filename,
+        status="PENDING"
+    )
+    db.add(new_doc)
+    db.commit()
+    db.refresh(new_doc)
+
+    task = process_document_ai.apply_async(args=[file.filename, new_doc.id])
+
+    new_task = models.TaskDetail(
+        task_id = task.id,
+        task_name = "process_document_ai",
+        status = "PENDING"
+    )
+    db.add(new_task)
+    db.commit()
+    db.refresh(new_task)
+
+    return {
+        "message": "File uploaded and AI analysis started",
+        "doc_id": new_doc.id,
+        "task_id": task.id
+    }
