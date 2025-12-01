@@ -58,6 +58,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - ./data:/data
     environment:
       # FIX: Revert to individual variables here too
       - DB_HOST=db
@@ -72,6 +74,31 @@ services:
       - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME}
       - AZURE_DOC_INT_ENDPOINT=${AZURE_DOC_INT_ENDPOINT}
       - AZURE_DOC_INT_KEY=${AZURE_DOC_INT_KEY}
+  celery_beat:
+    build: ./backend
+    container_name: simple_todo_beat
+    # Command to start the scheduler
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    depends_on:
+      - redis
+    volumes:
+      - ./data:/data
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+
+      - CELERY_BROKER_URL=${CELERY_BROKER_URL}
+      - CELERY_RESULT_BACKEND=${CELERY_RESULT_BACKEND}
+      - TZ=${TZ}
+
+      - AZURE_CONNECTION_STRING=${AZURE_CONNECTION_STRING}
+      - AZURE_CONTAINER_NAME=${AZURE_CONTAINER_NAME}
+      - AZURE_DOC_INT_ENDPOINT=${AZURE_DOC_INT_ENDPOINT}
+      - AZURE_DOC_INT_KEY=${AZURE_DOC_INT_KEY}
+
 
 volumes:
   postgres_data:

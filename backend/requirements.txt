@@ -7,6 +7,8 @@ pydantic
 celery
 redis
 azure-storage-blob
+azure-ai-formrecognizer
 python-multipart
 alembic
-azure-ai-formrecognizer
+openpyxl
+aiohttp
