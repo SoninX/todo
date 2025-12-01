@@ -1,9 +1,11 @@
 import os
 import time
 from celery import Celery
+from celery.schedules import crontab
 from sqlalchemy import text # Import text for safe SQL execution
 from app.database import SessionLocal
 from app import models
+import openpyxl
 
 from app.azure_client import (
     get_blob_service_client, 
@@ -19,6 +21,15 @@ celery_app = Celery(
     broker=broker_url,
     backend=result_backend
 )
+# ---  DEFINE THE SCHEDULE ---
+celery_app.conf.beat_schedule = {
+    'run-ocr-from-excel-every-morning': {
+        'task': 'dispatch_scheduled_ocr',
+        'schedule': crontab(hour=15, minute=1),
+        # 'schedule': 30.0, ## Run every 30 seconds
+    },
+}
+celery_app.conf.timezone = 'Asia/Kolkata'
 # make bind = True so that it can acess self which has task_id
 @celery_app.task(bind = True, name="create_task")
 def create_task(self, val1, val2):
@@ -113,3 +124,62 @@ def process_ocr(self, filename: str, doc_id: int):
         db.close()
     
     return "OCR Processing Finished" # add an id
+
+@celery_app.task(name="dispatch_scheduled_ocr")
+def dispatch_scheduled_ocr():
+    excel_path = "/data/data.xlsx"
+    
+    if not os.path.exists(excel_path):
+        print(f"Excel file not found at {excel_path}")
+        return "Excel file missing"
+
+    print(f"Reading Excel file: {excel_path}")
+    
+    try:
+        workbook = openpyxl.load_workbook(excel_path)
+        sheet = workbook.active
+        
+        # Open DB session once
+        db = SessionLocal()
+        
+        try:
+            for row in sheet.iter_rows(min_row=1, values_only=True):
+                filename = row[0]
+                
+                if filename:
+                    existing_doc = db.query(models.OCRDocument).filter(
+                        models.OCRDocument.filename == filename
+                    ).first()
+
+                    if existing_doc:
+                        print(f"Skipping {filename}: Already exists in DB with status {existing_doc.status}")
+                        continue
+
+                    print(f"Found new file: {filename}. Scheduling OCR...")
+                    
+                    new_doc = models.OCRDocument(
+                        filename=filename,
+                        status="SCHEDULED"
+                    )
+                    db.add(new_doc)
+                    db.commit()
+                    db.refresh(new_doc)
+                    
+                    # Trigger the worker
+                    task = process_ocr.apply_async(args=[filename, new_doc.id], countdown=2)
+
+                    new_task_detail = models.TaskDetail(
+                        task_id = task.id,
+                        task_name = "process_ocr",
+                        status = "SCHEDULED"
+                    )
+                    db.add(new_task_detail)
+                    db.commit()
+                    
+        finally:
+            db.close()
+                    
+        return "Scheduled processing completed"
+
+    except Exception as e:
+        return f"Failed to read Excel: {str(e)}"
